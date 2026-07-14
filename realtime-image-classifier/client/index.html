@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Real-Time Image Classification</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; padding: 2rem; }
+  h1 { font-size: 1.3rem; margin-bottom: 1rem; }
+  #wrap { position: relative; }
+  video, canvas { border-radius: 8px; }
+  canvas { display: none; }
+  #preds { margin-top: 1rem; width: 480px; }
+  .pred { display: flex; justify-content: space-between; padding: 4px 8px; background: #1e1e1e; margin-bottom: 4px; border-radius: 4px; }
+  .bar { height: 4px; background: #4ade80; border-radius: 2px; margin-top: 2px; }
+  #status { margin-top: .5rem; font-size: .85rem; color: #888; }
+  input, button { font-size: 1rem; padding: 4px 8px; margin: 0 4px; }
+</style>
+</head>
+<body>
+  <h1>Real-Time Image Classification</h1>
+  <div>
+    Server: <input id="serverUrl" value="ws://localhost:8000/ws/classify" size="35" />
+    <button id="startBtn">Start</button>
+    <button id="stopBtn">Stop</button>
+  </div>
+  <div id="wrap">
+    <video id="video" width="480" height="360" autoplay muted playsinline></video>
+    <canvas id="canvas" width="480" height="360"></canvas>
+  </div>
+  <div id="status">idle</div>
+  <div id="preds"></div>
+
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const predsEl = document.getElementById('preds');
+let ws = null;
+let sending = false;
+let stream = null;
+
+async function start() {
+  stream = await navigator.mediaDevices.getUserMedia({ video: true });
+  video.srcObject = stream;
+
+  const url = document.getElementById('serverUrl').value;
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    statusEl.textContent = 'connected — streaming';
+    sendLoop();
+  };
+  ws.onclose = () => { statusEl.textContent = 'disconnected'; };
+  ws.onerror = () => { statusEl.textContent = 'error connecting to server'; };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    sending = false; // ready for next frame once we get a reply (simple backpressure)
+    if (data.error) {
+      statusEl.textContent = 'error: ' + data.error;
+      return;
+    }
+    statusEl.textContent = `inference: ${data.inference_ms}ms  |  round-trip: ${data.frame_ms}ms`;
+    renderPredictions(data.predictions);
+  };
+}
+
+function sendLoop() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!sending) {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+    ws.send(dataUrl);
+    sending = true;
+  }
+  requestAnimationFrame(sendLoop);
+}
+
+function renderPredictions(preds) {
+  predsEl.innerHTML = preds.map(p => `
+    <div class="pred">
+      <span>${p.label}</span>
+      <span>${(p.confidence * 100).toFixed(1)}%</span>
+    </div>
+    <div class="bar" style="width:${p.confidence * 100}%"></div>
+  `).join('');
+}
+
+function stop() {
+  if (ws) ws.close();
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  statusEl.textContent = 'stopped';
+}
+
+document.getElementById('startBtn').onclick = start;
+document.getElementById('stopBtn').onclick = stop;
+</script>
+</body>
+</html>
